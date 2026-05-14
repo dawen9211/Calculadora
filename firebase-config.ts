@@ -1,8 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
-// Esta configuración debes sacarla de tu archivo firebase-applet-config.json 
-// que usamos en la aplicación web principal.
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
   authDomain: process.env.FIREBASE_AUTH_DOMAIN,
@@ -14,4 +12,6 @@ const firebaseConfig = {
 
 console.log("Initializing Firebase in Vercel function...");
 export const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// AQUÍ ESTÁ EL CAMBIO: Le pasamos el ID específico porque no usamos la base de datos default
+export const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID);
