@@ -1,0 +1,13 @@
+{
+  "name": "autoresponder-vercel",
+  "version": "1.0.0",
+  "description": "Mini aplicación para conectar AutoResponder con Firebase y Gemini, diseñada para Vercel.",
+  "main": "api/webhook.js",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "@google/genai": "^0.1.2",
+    "firebase": "^10.12.0"
+  }
+}
