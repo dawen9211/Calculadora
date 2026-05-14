@@ -2,7 +2,7 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { GoogleGenAI } from '@google/genai';
 
-// 1. Configuración de Firebase (Se lee de Vercel Environment Variables)
+// 1. Configuración de Firebase
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
   authDomain: process.env.FIREBASE_AUTH_DOMAIN,
@@ -12,15 +12,18 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID
 };
 
-// 2. Inicializar Firebase (Solo si no se ha inicializado antes)
+// 2. Inicializar Firebase
 const apps = getApps();
 const app = apps.length === 0 ? initializeApp(firebaseConfig) : apps[0];
-const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID);
+
+// FORZAMOS el uso de la configuración explícita (firebaseConfig) 
+// y usamos la base de datos por defecto si la variable FIREBASE_DATABASE_ID está vacía
+const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID || undefined);
 
 // 3. Instancia de Gemini
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// 4. Misma lógica de Gemini que usamos en la app principal
+// 4. Lógica de Gemini para extraer datos
 const parseClientWhatsAppOrder = async (message: string) => {
   const prompt = `Actúa como un extractor de datos de pedidos o cotizaciones financieras.
   El cliente envió el siguiente mensaje por WhatsApp:
@@ -33,18 +36,16 @@ const parseClientWhatsAppOrder = async (message: string) => {
     "isOrder": boolean,
     "isQuote": boolean,
     "destinationCurrency": "CUP" | "MLC" | "USD" | "UNKNOWN",
-    "amountSource": numero_o_null,
+    "amountSource": number | null,
     "amountSourceCurrency": "BRL" | "UNKNOWN",
-    "amountDest": numero_o_null
+    "amountDest": number | null
   }
   
   Reglas:
-  - Manejo de dicción: "clásica", "dólares" o "usd" es USD. "cup", "pesos" o "mn" es CUP. "mlc" es MLC.
-  - Si el cliente menciona reales, amountSource es ese número y amountSourceCurrency es BRL, amountDest null. Si menciona destino, setea destinationCurrency.
-  - Si el cliente dice XYZ cup/mlc/usd, entonces amountDest es XYZ, destinationCurrency es la respectiva, y amountSource es null.
-  - Si el cliente solo pregunta la tasa de cambio en general, establece isOrder: false e isQuote: false.
-  - IMPORTANTÍSIMO: Si el mensaje es para COTIZAR (isQuote=true), isOrder debe ser false. Si es saludo genérico, ambos falsos.
-  - Devuelve exclusivamente el JSON.`;
+  - "clásica", "dólares" o "usd" es USD. "cup", "pesos" o "mn" es CUP. "mlc" es MLC.
+  - Si menciona reales, amountSource es ese número y amountSourceCurrency es BRL.
+  - Si el cliente solo pregunta la tasa de cambio en general, ambos falsos.
+  - IMPORTANTE: Para COTIZAR (isQuote=true), isOrder debe ser false. Devuelve JSON.`;
 
   const response = await ai.models.generateContent({
     model: 'gemini-1.5-flash',
@@ -55,20 +56,18 @@ const parseClientWhatsAppOrder = async (message: string) => {
   return JSON.parse(text);
 };
 
-// 5. Función Serverless de Vercel (maneja la petición HTTP de AutoResponder)
+// 5. Función Serverless de Vercel (webhook)
 export default async function handler(req: any, res: any) {
-  // CORS provisional
-  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  // Responder al navegador para confirmar de que funciona
   if (req.method === 'GET') {
-    return res.status(200).send("✅ Webhook de Vercel funcionando correctamente online. Usa esta ruta en AutoResponder como método POST.");
+    return res.status(200).send("✅ Webhook funcionando.");
   }
 
   if (req.method !== 'POST') {
@@ -77,27 +76,20 @@ export default async function handler(req: any, res: any) {
 
   try {
     const { message, sender } = req.body || {};
-    console.log("Webhook body:", { message, sender });
     if (!message) {
-      console.log("No message received, skipping.");
       return res.json({ replies: [] });
     }
 
-    // A. Entender el mensaje con Gemini
     const orderData = await parseClientWhatsAppOrder(message);
-    console.log("Gemini parse result:", orderData);
 
-    // B. Si no es una cotización ("cuanto es X en Y"), no respondemos automáticamente.
     if (!orderData.isQuote) {
-      console.log("Not a quote request, skipping.");
       return res.json({ replies: [] });
     }
 
-    // C. Consultar la tasa de cambio en vivo desde Firebase
+    // Consultar tasas en Firebase
     const settingsDoc = await getDoc(doc(db, 'settings', 'global'));
     const rates = settingsDoc.exists() ? settingsDoc.data().rates || { CUP: 49, MLC: 0.17, USD: 0.17 } : { CUP: 49, MLC: 0.17, USD: 0.17 };
 
-    // D. Hacer el cálculo matemático
     const destCurrency = orderData.destinationCurrency === 'UNKNOWN' ? 'CUP' : orderData.destinationCurrency;
     
     let amountBRL = 0;
@@ -107,33 +99,17 @@ export default async function handler(req: any, res: any) {
     if (isSourceBRL) {
       amountBRL = orderData.amountSource || 0;
       amountDest = amountBRL * (rates[destCurrency] || 1);
+      return res.json({ replies: [{ message: `✅ Esos ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} reales serían: *${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency}*` }] });
     } else {
       amountDest = orderData.amountDest || 0;
       amountBRL = amountDest / (rates[destCurrency] || 1);
+      return res.json({ replies: [{ message: `✅ Esos ${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency} serían: *R$ ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales*` }] });
     }
-
-    // E. Preparar la respuesta para el AutoResponder
-    let replyMessage = "";
-    if (isSourceBRL) {
-      replyMessage = `✅ Esos ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} reales serían: *${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency}*`;
-    } else {
-      replyMessage = `✅ Esos ${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency} serían: *R$ ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales*`;
-    }
-
-    // Devolver el JSON que espera AutoResponder
-    return res.json({
-      replies: [
-        { message: replyMessage }
-      ]
-    });
 
   } catch (error: any) {
     console.error("Vercel Webhook Error:", error);
-    // Para depuración en AutoResponder, devolvemos un status 200 con el mensaje de error directamente al chat.
     return res.status(200).json({ 
-      replies: [
-        { message: `❌ Error en el servidor Webhook: ${error.message}` }
-      ] 
+      replies: [{ message: `❌ Error en el servidor: ${error.message}` }] 
     });
   }
 }
