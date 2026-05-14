@@ -58,7 +58,7 @@ const parseClientWhatsAppOrder = async (message: string) => {
 // 5. Función Serverless de Vercel (maneja la petición HTTP de AutoResponder)
 export default async function handler(req: any, res: any) {
   // CORS provisional
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
 
@@ -77,15 +77,19 @@ export default async function handler(req: any, res: any) {
 
   try {
     const { message, sender } = req.body || {};
+    console.log("Webhook body:", { message, sender });
     if (!message) {
-      return res.json({ replies: [] }); // No respondemos nada
+      console.log("No message received, skipping.");
+      return res.json({ replies: [] });
     }
 
     // A. Entender el mensaje con Gemini
     const orderData = await parseClientWhatsAppOrder(message);
+    console.log("Gemini parse result:", orderData);
 
     // B. Si no es una cotización ("cuanto es X en Y"), no respondemos automáticamente.
     if (!orderData.isQuote) {
+      console.log("Not a quote request, skipping.");
       return res.json({ replies: [] });
     }
 
