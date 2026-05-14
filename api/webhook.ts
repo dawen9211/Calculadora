@@ -12,7 +12,7 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID
 };
 
-// 2. Inicializar Firebase de forma segura
+// 2. Inicializar Firebase (Solo si no se ha inicializado antes)
 const apps = getApps();
 const app = apps.length === 0 ? initializeApp(firebaseConfig) : apps[0];
 const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID);
@@ -20,7 +20,7 @@ const db = getFirestore(app, process.env.FIREBASE_DATABASE_ID);
 // 3. Instancia de Gemini
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// 4. Lógica de IA para entender monedas
+// 4. Misma lógica de Gemini que usamos en la app principal
 const parseClientWhatsAppOrder = async (message: string) => {
   const prompt = `Actúa como un extractor de datos de pedidos o cotizaciones financieras.
   El cliente envió el siguiente mensaje por WhatsApp:
@@ -47,7 +47,7 @@ const parseClientWhatsAppOrder = async (message: string) => {
   - Devuelve exclusivamente el JSON.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-1.5-flash',
     contents: prompt,
   });
 
@@ -55,10 +55,10 @@ const parseClientWhatsAppOrder = async (message: string) => {
   return JSON.parse(text);
 };
 
-// 5. Función Serverless de Vercel
+// 5. Función Serverless de Vercel (maneja la petición HTTP de AutoResponder)
 export default async function handler(req: any, res: any) {
-  // CORS 
-  res.setHeader('Access-Control-Allow-Credentials', true);
+  // CORS provisional
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
 
@@ -66,9 +66,9 @@ export default async function handler(req: any, res: any) {
     return res.status(200).end();
   }
 
-  // Responder en navegador para confirmar
+  // Responder al navegador para confirmar de que funciona
   if (req.method === 'GET') {
-    return res.status(200).send("✅ Webhook de Vercel funcionando correctamente.");
+    return res.status(200).send("✅ Webhook de Vercel funcionando correctamente online. Usa esta ruta en AutoResponder como método POST.");
   }
 
   if (req.method !== 'POST') {
@@ -78,22 +78,22 @@ export default async function handler(req: any, res: any) {
   try {
     const { message, sender } = req.body || {};
     if (!message) {
-      return res.json({ replies: [] }); // No respondemos
+      return res.json({ replies: [] }); // No respondemos nada
     }
 
-    // A. Entender el mensaje
+    // A. Entender el mensaje con Gemini
     const orderData = await parseClientWhatsAppOrder(message);
 
-    // B. Si no es cotización, callamos.
+    // B. Si no es una cotización ("cuanto es X en Y"), no respondemos automáticamente.
     if (!orderData.isQuote) {
       return res.json({ replies: [] });
     }
 
-    // C. Ver datos en Fireabse
+    // C. Consultar la tasa de cambio en vivo desde Firebase
     const settingsDoc = await getDoc(doc(db, 'settings', 'global'));
     const rates = settingsDoc.exists() ? settingsDoc.data().rates || { CUP: 49, MLC: 0.17, USD: 0.17 } : { CUP: 49, MLC: 0.17, USD: 0.17 };
 
-    // D. Calcular
+    // D. Hacer el cálculo matemático
     const destCurrency = orderData.destinationCurrency === 'UNKNOWN' ? 'CUP' : orderData.destinationCurrency;
     
     let amountBRL = 0;
@@ -108,7 +108,7 @@ export default async function handler(req: any, res: any) {
       amountBRL = amountDest / (rates[destCurrency] || 1);
     }
 
-    // E. Generar mensaje
+    // E. Preparar la respuesta para el AutoResponder
     let replyMessage = "";
     if (isSourceBRL) {
       replyMessage = `✅ Esos ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} reales serían: *${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency}*`;
@@ -116,7 +116,7 @@ export default async function handler(req: any, res: any) {
       replyMessage = `✅ Esos ${amountDest.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${destCurrency} serían: *R$ ${amountBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reales*`;
     }
 
-    // Retorno al bot
+    // Devolver el JSON que espera AutoResponder
     return res.json({
       replies: [
         { message: replyMessage }
@@ -124,11 +124,11 @@ export default async function handler(req: any, res: any) {
     });
 
   } catch (error: any) {
-    console.error("Webhook Error:", error);
-    // IMPORTANTE: Devuelve error 200 para que se imprima textualmente en el chat
+    console.error("Vercel Webhook Error:", error);
+    // Para depuración en AutoResponder, devolvemos un status 200 con el mensaje de error directamente al chat.
     return res.status(200).json({ 
       replies: [
-        { message: `❌ Error en Vercel: ${error.message}` }
+        { message: `❌ Error en el servidor Webhook: ${error.message}` }
       ] 
     });
   }
